@@ -10,13 +10,22 @@ from ..models import ProductInfo, SiteConfig
 
 
 class LGScraper(BaseScraper):
-    """Scraper específico para LG Brasil"""
+    """
+    Scraper específico para LG Brasil
+
+    Desafio: LG possui e-commerce, mas sem funcionalidade de busca unificada.
+    Os produtos estão organizados em dezenas de categorias específicas,
+    exigindo navegação manual por cada subcategoria para encontrar itens.
+
+    Para implementação futura: mapear todas as categorias/subcategorias
+    do site LG para permitir busca efetiva por tipo de produto.
+    """
 
     def __init__(self):
         config = SiteConfig(
             name="LG",
             base_url="https://www.lg.com",
-            search_url_pattern="https://www.lg.com/br/busca?q={query}",
+            search_url_pattern="https://www.lg.com/br/produtos/",
             selectors={
                 "product_container": ".product-item, .product-card, .search-result-item, .product",
                 "title": ".product-title, .product-name, h3, h4, .card-title, .title",
@@ -48,49 +57,63 @@ class LGScraper(BaseScraper):
     async def scrape(
         self, product_name: str, max_results: int = 10
     ) -> List[ProductInfo]:
-        """Override do método scrape para aguardar carregamento dinâmico da LG"""
+        """Override do método scrape - LG requer navegação por categorias específicas"""
         logger.info(f"Iniciando scraping {self.config.name} para: {product_name}")
 
-        search_urls = self._build_multiple_search_urls(product_name)
-        all_products = []
+        # LG Brasil possui e-commerce, mas sem funcionalidade de busca unificada
+        # Seria necessário navegar por dezenas de categorias específicas
+        logger.warning(
+            "LG Brasil: E-commerce com navegação por categorias específicas - sem busca unificada"
+        )
+        logger.info(
+            "LG requer navegação manual por categorias para encontrar produtos específicos"
+        )
+        logger.info(
+            "Para implementação futura: mapear todas as subcategorias LG para busca efetiva"
+        )
 
-        for search_url in search_urls:
-            try:
-                products = await self.scrape_with_selenium_wait(search_url, max_results)
-
-                if products:
-                    all_products.extend(products)
-                    logger.info(
-                        f"LG: Encontrados {len(products)} produtos na URL: {search_url}"
-                    )
-                    break
-                else:
-                    logger.warning(
-                        f"LG: Nenhum produto encontrado na URL: {search_url}"
-                    )
-
-            except Exception as e:
-                logger.warning(f"Erro ao tentar URL LG {search_url}: {str(e)}")
-                continue
-
-        if all_products:
-            logger.info(f"Scraping {self.config.name} concluído via método dinâmico")
-        else:
-            logger.warning(f"LG: Nenhum produto encontrado em nenhuma URL testada")
-
-        return all_products[:max_results]
+        return []
 
     def _build_multiple_search_urls(self, product_name: str) -> List[str]:
-        """Constrói múltiplas URLs de busca para LG"""
-        encoded_query = urllib.parse.quote(product_name, safe="")
+        """Constrói múltiplas URLs baseadas em categorias LG"""
 
-        urls = [
-            f"https://www.lg.com/br/busca?q={encoded_query}",
-            f"https://www.lg.com/br/search?query={encoded_query}",
-            f"https://www.lg.com/br/produtos?search={encoded_query}",
-        ]
+        # Mapeamento de queries para categorias da LG
+        category_mapping = {
+            "tv": [
+                "https://www.lg.com/br/tvs/",
+                "https://www.lg.com/br/tvs-e-soundbars/",
+            ],
+            "televisao": [
+                "https://www.lg.com/br/tvs/",
+                "https://www.lg.com/br/tvs-e-soundbars/",
+            ],
+            "smart tv": [
+                "https://www.lg.com/br/tvs/",
+                "https://www.lg.com/br/tvs-e-soundbars/",
+            ],
+            "monitor": ["https://www.lg.com/br/monitores/"],
+            "refrigerador": ["https://www.lg.com/br/refrigeradores/"],
+            "geladeira": ["https://www.lg.com/br/refrigeradores/"],
+            "ar condicionado": ["https://www.lg.com/br/ar-condicionado/"],
+            "notebook": ["https://www.lg.com/br/computadores/"],
+            "celular": ["https://www.lg.com/br/celulares/"],
+            "smartphone": ["https://www.lg.com/br/celulares/"],
+        }
 
-        return urls
+        query_lower = product_name.lower()
+        urls = []
+
+        # Procura por correspondências exatas ou parciais
+        for key, category_urls in category_mapping.items():
+            if key in query_lower:
+                urls.extend(category_urls)
+                break
+
+        # Se não encontrou categoria específica, usa URL genérica de produtos
+        if not urls:
+            urls = ["https://www.lg.com/br/produtos/"]
+
+        return list(set(urls))  # Remove duplicatas
 
     async def scrape_with_selenium_wait(
         self, url: str, max_results: int
