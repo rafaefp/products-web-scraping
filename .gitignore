@@ -1,0 +1,60 @@
+# filepath: c:\Users\r.ferreira.pimentel\OneDrive - Avanade\Documents\O2M IA\FastShop\DEV\MidiasPagas_Crawlee\.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Environment variables
+.env
+.env.local
+.env.prod
+.env.example
+
+# Cache
+.cache/
+*.cache
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+output/
+temp/
+*.tmp
+selenium-logs/
+chromedriver.exe
+geckodriver.exe
