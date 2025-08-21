@@ -16,7 +16,8 @@ POC para testar agentes que buscam produtos e preços em sites de e-commerce bra
 - **Mercado Livre**: Produtos e preços 
 - **Carrefour**: Produtos e preços 
 - **Magazine Luiza**: Produtos e preços
-- **Americanas**: Produtos e preços
+- **Samsung**: Produtos e preços oficiais
+- **LG**: Produtos e preços oficiais
 - **Casas Bahia**: Produtos e preços (⚠️ *Bloqueado por anti-bot avançado*)
 - **Ponto Frio**: Produtos e preços (⚠️ *Bloqueado por anti-bot avançado*)
 

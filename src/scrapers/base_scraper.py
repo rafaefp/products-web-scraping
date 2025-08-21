@@ -237,3 +237,35 @@ class BaseScraper(ABC):
     def add_delay(self):
         """Adiciona delay entre requests"""
         time.sleep(self.config.rate_limit_delay)
+
+    def _extract_price(self, price_text: str) -> float:
+        """Extrai valor numérico do texto de preço (formato brasileiro)"""
+        import re
+        from typing import Optional
+
+        if not price_text:
+            return None
+
+        # Remove caracteres não numéricos exceto vírgulas e pontos
+        cleaned = re.sub(r"[^\d,.]", "", price_text)
+
+        # Converte vírgula para ponto (padrão brasileiro)
+        if "," in cleaned and "." in cleaned:
+            # Formato: 1.234,56 -> remove pontos de milhar, converte vírgula para ponto
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        elif "," in cleaned:
+            # Formato: 1234,56 -> converte vírgula para ponto
+            cleaned = cleaned.replace(",", ".")
+        # Se só tem ponto, pode ser separador decimal ou milhar
+        elif "." in cleaned:
+            # Se tem mais de 3 dígitos após o ponto, é separador de milhar
+            parts = cleaned.split(".")
+            if len(parts) == 2 and len(parts[1]) > 2:
+                # É separador de milhar, remove o ponto
+                cleaned = cleaned.replace(".", "")
+            # Senão, assume que é separador decimal
+
+        try:
+            return float(cleaned)
+        except ValueError:
+            return None

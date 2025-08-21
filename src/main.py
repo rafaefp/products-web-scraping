@@ -11,7 +11,8 @@ Sites suportados:
 - Mercado Livre
 - Carrefour
 - Magazine Luiza
-- Americanas
+- Samsung
+- LG
 - Casas Bahia
 - Ponto Frio
 
@@ -19,7 +20,7 @@ Uso:
     python main.py "iPhone 16 Pro Max" "amazon"
     python main.py "iPhone 16 Pro Max" "mercadolivre"
     python main.py "iPhone 16 Pro Max" "casas_bahia"
-    python main.py "iPhone 16 Pro Max" "pontofrio"
+    python main.py "iPhone 16 Pro Max" "ponto_frio"
     python main.py "iPhone 16 Pro Max" "carrefour"
     python main.py "iPhone 16 Pro Max" "all"
 """
@@ -145,10 +146,10 @@ Exemplos de uso:
   python main.py "Notebook Dell" all
   python main.py "Smart TV 55" amazon mercadolivre
 
-Sites suportados: amazon, mercadolivre, magazine_luiza, americanas, casas_bahia, pontofrio, carrefour, samsung, lg, all
+Sites suportados: amazon, mercadolivre, magazine_luiza, carrefour, samsung, lg, casas_bahia, ponto_frio, all
 
-Nota: 'samsung' e 'lg' são lojas específicas de marca e não estão incluídas na busca 'all'.
-      Use 'samsung' ou 'lg' individualmente para produtos específicos dessas marcas.
+Nota: O parâmetro 'all' inclui apenas os sites de e-commerce gerais: amazon, mercadolivre, carrefour, magazine_luiza.
+      Os sites de marca (samsung, lg) e específicos (casas_bahia, ponto_frio) devem ser especificados individualmente.
         """,
     )
 
@@ -157,7 +158,7 @@ Nota: 'samsung' e 'lg' são lojas específicas de marca e não estão incluídas
     parser.add_argument(
         "sites",
         nargs="+",
-        help="Sites onde buscar (amazon, mercadolivre, magazine_luiza, americanas, casas_bahia, pontofrio, carrefour, samsung, all)",
+        help="Sites onde buscar (amazon, mercadolivre, magazine_luiza, carrefour, samsung, lg, casas_bahia, ponto_frio, all)",
     )
 
     parser.add_argument(
@@ -207,7 +208,7 @@ Nota: 'samsung' e 'lg' são lojas específicas de marca e não estão incluídas
 
     try:
         # Executa o scraping
-        result = await orchestrator.execute_scraping(request)
+        result = await orchestrator.scrape(request)
 
         # Exibe resultados
         print_results(result)

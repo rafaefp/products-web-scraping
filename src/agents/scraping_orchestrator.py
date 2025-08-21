@@ -1,5 +1,6 @@
 from typing import List, Dict, Any, TypedDict
 import asyncio
+import time
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from loguru import logger
@@ -8,36 +9,24 @@ from src.models import ScrapingRequest, ScrapingResult, ProductInfo
 from src.scrapers import (
     AmazonBRScraper,
     MercadoLivreScraper,
-    AmericanasScraper,
-    MagazineLuizaScraper,
-    CasasBahiaScraper,
-    PontoFrioScraper,
     CarrefourScraper,
+    MagazineLuizaScraper,
     SamsungScraper,
     LGScraper,
-)
-
-from ..models import ScrapingRequest, ScrapingResult, ProductInfo
-from ..scrapers.ecommerce_scrapers import (
-    AmazonBRScraper,
-    MercadoLivreScraper,
-    AmericanasScraper,
-    MagazineLuizaScraper,
     CasasBahiaScraper,
     PontoFrioScraper,
-    CarrefourScraper,
-    SamsungScraper,
 )
 
 
 class ScrapingState(TypedDict):
-    """Estado compartilhado entre os agentes"""
+    """Estado compartilhado entre agentes"""
 
     request: ScrapingRequest
-    products: List[ProductInfo]
-    errors: List[str]
+    results: List[ProductInfo]
     completed_sites: List[str]
+    remaining_sites: List[str]
     messages: List[BaseMessage]
+    max_results_per_site: int
 
 
 class ScrapingOrchestrator:
@@ -47,13 +36,12 @@ class ScrapingOrchestrator:
         self.scrapers = {
             "amazon": AmazonBRScraper(),
             "mercadolivre": MercadoLivreScraper(),
-            "americanas": AmericanasScraper(),
-            "magazine_luiza": MagazineLuizaScraper(),
-            "casas_bahia": CasasBahiaScraper(),
-            "pontofrio": PontoFrioScraper(),
             "carrefour": CarrefourScraper(),
+            "magazine_luiza": MagazineLuizaScraper(),
             "samsung": SamsungScraper(),
             "lg": LGScraper(),
+            "casas_bahia": CasasBahiaScraper(),
+            "ponto_frio": PontoFrioScraper(),
         }
         self.graph = self._build_graph()
 
@@ -62,20 +50,19 @@ class ScrapingOrchestrator:
 
         workflow = StateGraph(ScrapingState)
 
-        # Nós do grafo
+        # Adiciona nós para cada tipo de agente
         workflow.add_node("coordinator", self._coordinator_agent)
         workflow.add_node("amazon_scraper", self._amazon_scraper_agent)
         workflow.add_node("mercadolivre_scraper", self._mercadolivre_scraper_agent)
-        workflow.add_node("americanas_scraper", self._americanas_scraper_agent)
-        workflow.add_node("magazine_luiza_scraper", self._magazine_luiza_scraper_agent)
-        workflow.add_node("casas_bahia_scraper", self._casas_bahia_scraper_agent)
-        workflow.add_node("pontofrio_scraper", self._pontofrio_scraper_agent)
         workflow.add_node("carrefour_scraper", self._carrefour_scraper_agent)
+        workflow.add_node("magazine_luiza_scraper", self._magazine_luiza_scraper_agent)
         workflow.add_node("samsung_scraper", self._samsung_scraper_agent)
         workflow.add_node("lg_scraper", self._lg_scraper_agent)
-        workflow.add_node("results_aggregator", self._results_aggregator_agent)
+        workflow.add_node("casas_bahia_scraper", self._casas_bahia_scraper_agent)
+        workflow.add_node("ponto_frio_scraper", self._ponto_frio_scraper_agent)
+        workflow.add_node("aggregator", self._aggregator_agent)
 
-        # Fluxo do grafo
+        # Define entrada
         workflow.set_entry_point("coordinator")
 
         # Coordenador decide quais scrapers executar
@@ -85,18 +72,16 @@ class ScrapingOrchestrator:
             {
                 "amazon": "amazon_scraper",
                 "mercadolivre": "mercadolivre_scraper",
-                "magazine_luiza": "magazine_luiza_scraper",
-                "americanas": "americanas_scraper",
-                "casas_bahia": "casas_bahia_scraper",
-                "pontofrio": "pontofrio_scraper",
                 "carrefour": "carrefour_scraper",
+                "magazine_luiza": "magazine_luiza_scraper",
                 "samsung": "samsung_scraper",
                 "lg": "lg_scraper",
-                "multiple": "amazon_scraper",  # Inicia com Amazon se múltiplos sites
-                "end": "results_aggregator",
+                "casas_bahia": "casas_bahia_scraper",
+                "ponto_frio": "ponto_frio_scraper",
             },
         )
 
+        # Cada scraper volta para verificar se há mais sites
         workflow.add_conditional_edges(
             "amazon_scraper",
             self._check_remaining_scrapers,
@@ -104,11 +89,11 @@ class ScrapingOrchestrator:
                 "mercadolivre": "mercadolivre_scraper",
                 "carrefour": "carrefour_scraper",
                 "magazine_luiza": "magazine_luiza_scraper",
-                "americanas": "americanas_scraper",
-                "casas_bahia": "casas_bahia_scraper",
-                "pontofrio": "pontofrio_scraper",
                 "samsung": "samsung_scraper",
-                "done": "results_aggregator",
+                "lg": "lg_scraper",
+                "casas_bahia": "casas_bahia_scraper",
+                "ponto_frio": "ponto_frio_scraper",
+                "end": "aggregator",
             },
         )
 
@@ -116,13 +101,14 @@ class ScrapingOrchestrator:
             "mercadolivre_scraper",
             self._check_remaining_scrapers,
             {
+                "amazon": "amazon_scraper",
                 "carrefour": "carrefour_scraper",
                 "magazine_luiza": "magazine_luiza_scraper",
-                "americanas": "americanas_scraper",
-                "casas_bahia": "casas_bahia_scraper",
-                "pontofrio": "pontofrio_scraper",
                 "samsung": "samsung_scraper",
-                "done": "results_aggregator",
+                "lg": "lg_scraper",
+                "casas_bahia": "casas_bahia_scraper",
+                "ponto_frio": "ponto_frio_scraper",
+                "end": "aggregator",
             },
         )
 
@@ -130,12 +116,14 @@ class ScrapingOrchestrator:
             "carrefour_scraper",
             self._check_remaining_scrapers,
             {
+                "amazon": "amazon_scraper",
+                "mercadolivre": "mercadolivre_scraper",
                 "magazine_luiza": "magazine_luiza_scraper",
-                "americanas": "americanas_scraper",
-                "casas_bahia": "casas_bahia_scraper",
-                "pontofrio": "pontofrio_scraper",
                 "samsung": "samsung_scraper",
-                "done": "results_aggregator",
+                "lg": "lg_scraper",
+                "casas_bahia": "casas_bahia_scraper",
+                "ponto_frio": "ponto_frio_scraper",
+                "end": "aggregator",
             },
         )
 
@@ -143,41 +131,14 @@ class ScrapingOrchestrator:
             "magazine_luiza_scraper",
             self._check_remaining_scrapers,
             {
-                "americanas": "americanas_scraper",
+                "amazon": "amazon_scraper",
+                "mercadolivre": "mercadolivre_scraper",
+                "carrefour": "carrefour_scraper",
+                "samsung": "samsung_scraper",
+                "lg": "lg_scraper",
                 "casas_bahia": "casas_bahia_scraper",
-                "pontofrio": "pontofrio_scraper",
-                "samsung": "samsung_scraper",
-                "done": "results_aggregator",
-            },
-        )
-
-        workflow.add_conditional_edges(
-            "americanas_scraper",
-            self._check_remaining_scrapers,
-            {
-                "casas_bahia": "casas_bahia_scraper",
-                "pontofrio": "pontofrio_scraper",
-                "samsung": "samsung_scraper",
-                "done": "results_aggregator",
-            },
-        )
-
-        workflow.add_conditional_edges(
-            "casas_bahia_scraper",
-            self._check_remaining_scrapers,
-            {
-                "pontofrio": "pontofrio_scraper",
-                "samsung": "samsung_scraper",
-                "done": "results_aggregator",
-            },
-        )
-
-        workflow.add_conditional_edges(
-            "pontofrio_scraper",
-            self._check_remaining_scrapers,
-            {
-                "samsung": "samsung_scraper",
-                "done": "results_aggregator",
+                "ponto_frio": "ponto_frio_scraper",
+                "end": "aggregator",
             },
         )
 
@@ -185,7 +146,14 @@ class ScrapingOrchestrator:
             "samsung_scraper",
             self._check_remaining_scrapers,
             {
-                "done": "results_aggregator",
+                "amazon": "amazon_scraper",
+                "mercadolivre": "mercadolivre_scraper",
+                "carrefour": "carrefour_scraper",
+                "magazine_luiza": "magazine_luiza_scraper",
+                "lg": "lg_scraper",
+                "casas_bahia": "casas_bahia_scraper",
+                "ponto_frio": "ponto_frio_scraper",
+                "end": "aggregator",
             },
         )
 
@@ -193,94 +161,135 @@ class ScrapingOrchestrator:
             "lg_scraper",
             self._check_remaining_scrapers,
             {
-                "done": "results_aggregator",
+                "amazon": "amazon_scraper",
+                "mercadolivre": "mercadolivre_scraper",
+                "carrefour": "carrefour_scraper",
+                "magazine_luiza": "magazine_luiza_scraper",
+                "samsung": "samsung_scraper",
+                "casas_bahia": "casas_bahia_scraper",
+                "ponto_frio": "ponto_frio_scraper",
+                "end": "aggregator",
             },
         )
 
-        workflow.add_edge("results_aggregator", END)
+        workflow.add_conditional_edges(
+            "casas_bahia_scraper",
+            self._check_remaining_scrapers,
+            {
+                "amazon": "amazon_scraper",
+                "mercadolivre": "mercadolivre_scraper",
+                "carrefour": "carrefour_scraper",
+                "magazine_luiza": "magazine_luiza_scraper",
+                "samsung": "samsung_scraper",
+                "lg": "lg_scraper",
+                "ponto_frio": "ponto_frio_scraper",
+                "end": "aggregator",
+            },
+        )
+
+        workflow.add_conditional_edges(
+            "ponto_frio_scraper",
+            self._check_remaining_scrapers,
+            {
+                "amazon": "amazon_scraper",
+                "mercadolivre": "mercadolivre_scraper",
+                "carrefour": "carrefour_scraper",
+                "magazine_luiza": "magazine_luiza_scraper",
+                "samsung": "samsung_scraper",
+                "lg": "lg_scraper",
+                "casas_bahia": "casas_bahia_scraper",
+                "end": "aggregator",
+            },
+        )
+
+        # Agregador é o fim
+        workflow.add_edge("aggregator", END)
 
         return workflow.compile()
 
     def _coordinator_agent(self, state: ScrapingState) -> ScrapingState:
-        """Agente coordenador que analisa a requisição"""
-        logger.info("Agente Coordenador: Analisando requisição de scraping")
+        """Agente coordenador que decide qual scraper executar primeiro"""
+        logger.info("Coordenador: Iniciando orquestração de scraping")
 
-        request = state["request"]
-
-        # Expande "all" para todos os sites disponíveis
-        if "all" in request.target_sites:
-            request.target_sites = [
-                "amazon",
-                "mercadolivre",
-                "magazine_luiza",
-                "americanas",
-                "casas_bahia",
-            ]
-
-        # Valida sites disponíveis
-        available_sites = []
-        supported_sites = [
+        # Define quais sites scraping baseado na requisição
+        sites_to_scrape = [
             "amazon",
             "mercadolivre",
-            "magazine_luiza",
-            "americanas",
-            "casas_bahia",
-            "pontofrio",
             "carrefour",
+            "magazine_luiza",
             "samsung",
+            "lg",
+            "casas_bahia",
+            "ponto_frio",
         ]
 
-        for site in request.target_sites:
-            site_lower = site.lower()
-            if site_lower in supported_sites:
-                available_sites.append(site_lower)
-            else:
-                state["errors"].append(f"Site não suportado: {site}")
+        # Filtra sites se especificados na requisição
+        if hasattr(state["request"], "target_sites") and state["request"].target_sites:
+            sites_to_scrape = [
+                site
+                for site in sites_to_scrape
+                if site in state["request"].target_sites
+            ]
 
-        # Atualiza a requisição com sites válidos
-        state["request"].target_sites = available_sites
+        state["remaining_sites"] = sites_to_scrape
+        state["completed_sites"] = []
+        state["results"] = []
+        state["max_results_per_site"] = state["request"].max_results_per_site
 
-        # Adiciona mensagem de coordenação
-        message = HumanMessage(
-            content=f"Iniciando scraping para '{request.product_name}' nos sites: {', '.join(available_sites)}"
+        state["messages"].append(
+            AIMessage(
+                content=f"Coordenador: Iniciando scraping em {len(sites_to_scrape)} sites"
+            )
         )
-        state["messages"].append(message)
 
-        logger.info(f"Sites válidos identificados: {available_sites}")
+        logger.info(f"Sites selecionados para scraping: {sites_to_scrape}")
         return state
 
+    def _decide_scrapers(self, state: ScrapingState) -> str:
+        """Decide qual scraper executar próximo"""
+        if not state["remaining_sites"]:
+            return "end"
+
+        next_site = state["remaining_sites"][0]
+        logger.info(f"Próximo site: {next_site}")
+        return next_site
+
+    def _check_remaining_scrapers(self, state: ScrapingState) -> str:
+        """Verifica se há mais scrapers para executar"""
+        if not state["remaining_sites"]:
+            return "end"
+
+        next_site = state["remaining_sites"][0]
+        return next_site
+
     def _amazon_scraper_agent(self, state: ScrapingState) -> ScrapingState:
-        """Agente especializado em scraping da Amazon"""
+        """Agente especializado em scraping da Amazon BR"""
         logger.info("Agente Amazon: Iniciando scraping")
 
         try:
             scraper = self.scrapers["amazon"]
-            request = state["request"]
-
-            # Executa scraping assíncrono
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            products = loop.run_until_complete(
-                scraper.scrape(request.product_name, request.max_results_per_site)
+            products = asyncio.run(
+                scraper.scrape(
+                    state["request"].product_name, state["max_results_per_site"]
+                )
             )
 
-            loop.close()
-
-            # Adiciona produtos encontrados
-            state["products"].extend(products)
+            state["results"].extend(products)
+            state["remaining_sites"].remove("amazon")
             state["completed_sites"].append("amazon")
 
-            # Adiciona mensagem de resultado
-            message = AIMessage(content=f"Amazon: {len(products)} produtos encontrados")
-            state["messages"].append(message)
+            state["messages"].append(
+                AIMessage(content=f"Amazon: {len(products)} produtos encontrados")
+            )
 
-            logger.success(f"Amazon scraping concluído: {len(products)} produtos")
+            logger.info(f"Amazon: {len(products)} produtos coletados")
 
         except Exception as e:
-            error_msg = f"Erro no scraping da Amazon: {str(e)}"
-            state["errors"].append(error_msg)
-            logger.error(error_msg)
+            logger.error(f"Erro no scraping Amazon: {str(e)}")
+            state["remaining_sites"].remove("amazon")
+            state["messages"].append(
+                AIMessage(content=f"Amazon: Erro durante scraping - {str(e)}")
+            )
 
         return state
 
@@ -290,174 +299,30 @@ class ScrapingOrchestrator:
 
         try:
             scraper = self.scrapers["mercadolivre"]
-            request = state["request"]
-
-            # Executa scraping assíncrono
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            products = loop.run_until_complete(
-                scraper.scrape(request.product_name, request.max_results_per_site)
+            products = asyncio.run(
+                scraper.scrape(
+                    state["request"].product_name, state["max_results_per_site"]
+                )
             )
 
-            loop.close()
-
-            # Adiciona produtos encontrados
-            state["products"].extend(products)
+            state["results"].extend(products)
+            state["remaining_sites"].remove("mercadolivre")
             state["completed_sites"].append("mercadolivre")
 
-            # Adiciona mensagem de resultado
-            message = AIMessage(
-                content=f"Mercado Livre: {len(products)} produtos encontrados"
+            state["messages"].append(
+                AIMessage(
+                    content=f"Mercado Livre: {len(products)} produtos encontrados"
+                )
             )
-            state["messages"].append(message)
 
-            logger.success(
-                f"Mercado Livre scraping concluído: {len(products)} produtos"
-            )
+            logger.info(f"Mercado Livre: {len(products)} produtos coletados")
 
         except Exception as e:
-            error_msg = f"Erro no scraping do Mercado Livre: {str(e)}"
-            state["errors"].append(error_msg)
-            logger.error(error_msg)
-
-        return state
-
-    def _americanas_scraper_agent(self, state: ScrapingState) -> ScrapingState:
-        """Agente especializado em scraping do Americanas"""
-        logger.info("Agente Americanas: Iniciando scraping")
-
-        try:
-            scraper = self.scrapers["americanas"]
-            request = state["request"]
-
-            # Executa scraping assíncrono
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            products = loop.run_until_complete(
-                scraper.scrape(request.product_name, request.max_results_per_site)
+            logger.error(f"Erro no scraping Mercado Livre: {str(e)}")
+            state["remaining_sites"].remove("mercadolivre")
+            state["messages"].append(
+                AIMessage(content=f"Mercado Livre: Erro durante scraping - {str(e)}")
             )
-
-            loop.close()
-
-            # Adiciona produtos encontrados
-            state["products"].extend(products)
-            state["completed_sites"].append("americanas")
-
-            # Adiciona mensagem de resultado
-            message = AIMessage(
-                content=f"Americanas: {len(products)} produtos encontrados"
-            )
-            state["messages"].append(message)
-
-            logger.success(f"Americanas scraping concluído: {len(products)} produtos")
-
-        except Exception as e:
-            error_msg = f"Erro no scraping do Americanas: {str(e)}"
-            state["errors"].append(error_msg)
-            logger.error(error_msg)
-
-        return state
-
-    def _magazine_luiza_scraper_agent(self, state: ScrapingState) -> ScrapingState:
-        """Agente especializado em scraping do Magazine Luiza"""
-        logger.info("Agente Magazine Luiza: Iniciando scraping")
-
-        try:
-            scraper = self.scrapers["magazine_luiza"]
-            request = state["request"]
-
-            # Executa scraping assíncrono
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            products = loop.run_until_complete(
-                scraper.scrape(request.product_name, request.max_results_per_site)
-            )
-
-            loop.close()
-
-            # Adiciona produtos encontrados
-            state["products"].extend(products)
-            state["completed_sites"].append("magazine_luiza")
-
-            # Adiciona mensagem de resultado
-            message = AIMessage(
-                content=f"Magazine Luiza: {len(products)} produtos encontrados"
-            )
-            state["messages"].append(message)
-
-            logger.success(
-                f"Magazine Luiza scraping concluído: {len(products)} produtos"
-            )
-
-        except Exception as e:
-            error_msg = f"Erro no scraping do Magazine Luiza: {str(e)}"
-            state["errors"].append(error_msg)
-            logger.error(error_msg)
-
-        return state
-
-    def _casas_bahia_scraper_agent(self, state: ScrapingState) -> ScrapingState:
-        """Agente especializado em scraping das Casas Bahia"""
-        logger.info("Agente Casas Bahia: Iniciando scraping")
-
-        try:
-            scraper = self.scrapers["casas_bahia"]
-            request = state["request"]
-
-            # Executa scraping assíncrono
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            products = loop.run_until_complete(
-                scraper.scrape(request.product_name, request.max_results_per_site)
-            )
-
-            loop.close()
-
-            # Adiciona produtos encontrados
-            state["products"].extend(products)
-            state["completed_sites"].append("casas_bahia")
-
-            logger.success(f"Casas Bahia scraping concluído: {len(products)} produtos")
-
-        except Exception as e:
-            error_msg = f"Erro no scraping das Casas Bahia: {str(e)}"
-            state["errors"].append(error_msg)
-            logger.error(error_msg)
-
-        return state
-
-    def _pontofrio_scraper_agent(self, state: ScrapingState) -> ScrapingState:
-        """Agente especializado em scraping do Ponto Frio"""
-        logger.info("Agente Ponto Frio: Iniciando scraping")
-
-        try:
-            scraper = self.scrapers["pontofrio"]
-            request = state["request"]
-
-            # Executa scraping assíncrono
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            products = loop.run_until_complete(
-                scraper.scrape(request.product_name, request.max_results_per_site)
-            )
-
-            loop.close()
-
-            # Adiciona produtos encontrados
-            state["products"].extend(products)
-            state["completed_sites"].append("pontofrio")
-
-            logger.success(f"Ponto Frio scraping concluído: {len(products)} produtos")
-
-        except Exception as e:
-            error_msg = f"Erro no scraping do Ponto Frio: {str(e)}"
-            state["errors"].append(error_msg)
-            logger.error(error_msg)
 
         return state
 
@@ -467,288 +332,269 @@ class ScrapingOrchestrator:
 
         try:
             scraper = self.scrapers["carrefour"]
-            request = state["request"]
-
-            # Executa scraping assíncrono
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            products = loop.run_until_complete(
-                scraper.scrape(request.product_name, request.max_results_per_site)
+            products = asyncio.run(
+                scraper.scrape(
+                    state["request"].product_name, state["max_results_per_site"]
+                )
             )
 
-            loop.close()
-
-            # Adiciona produtos encontrados
-            state["products"].extend(products)
+            state["results"].extend(products)
+            state["remaining_sites"].remove("carrefour")
             state["completed_sites"].append("carrefour")
 
-            # Adiciona mensagem de resultado
-            message = AIMessage(
-                content=f"Carrefour: {len(products)} produtos encontrados"
+            state["messages"].append(
+                AIMessage(content=f"Carrefour: {len(products)} produtos encontrados")
             )
-            state["messages"].append(message)
 
-            logger.success(f"Carrefour scraping concluído: {len(products)} produtos")
+            logger.info(f"Carrefour: {len(products)} produtos coletados")
 
         except Exception as e:
-            error_msg = f"Erro no scraping do Carrefour: {str(e)}"
-            state["errors"].append(error_msg)
-            logger.error(error_msg)
+            logger.error(f"Erro no scraping Carrefour: {str(e)}")
+            state["remaining_sites"].remove("carrefour")
+            state["messages"].append(
+                AIMessage(content=f"Carrefour: Erro durante scraping - {str(e)}")
+            )
+
+        return state
+
+    def _magazine_luiza_scraper_agent(self, state: ScrapingState) -> ScrapingState:
+        """Agente especializado em scraping do Magazine Luiza"""
+        logger.info("Agente Magazine Luiza: Iniciando scraping")
+
+        try:
+            scraper = self.scrapers["magazine_luiza"]
+            products = asyncio.run(
+                scraper.scrape(
+                    state["request"].product_name, state["max_results_per_site"]
+                )
+            )
+
+            state["results"].extend(products)
+            state["remaining_sites"].remove("magazine_luiza")
+            state["completed_sites"].append("magazine_luiza")
+
+            state["messages"].append(
+                AIMessage(
+                    content=f"Magazine Luiza: {len(products)} produtos encontrados"
+                )
+            )
+
+            logger.info(f"Magazine Luiza: {len(products)} produtos coletados")
+
+        except Exception as e:
+            logger.error(f"Erro no scraping Magazine Luiza: {str(e)}")
+            state["remaining_sites"].remove("magazine_luiza")
+            state["messages"].append(
+                AIMessage(content=f"Magazine Luiza: Erro durante scraping - {str(e)}")
+            )
 
         return state
 
     def _samsung_scraper_agent(self, state: ScrapingState) -> ScrapingState:
-        """Agente especializado em scraping da Samsung Brasil"""
+        """Agente especializado em scraping da Samsung"""
         logger.info("Agente Samsung: Iniciando scraping")
 
         try:
             scraper = self.scrapers["samsung"]
-            request = state["request"]
-
-            # Executa scraping assíncrono
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            products = loop.run_until_complete(
-                scraper.scrape(request.product_name, request.max_results_per_site)
+            products = asyncio.run(
+                scraper.scrape(
+                    state["request"].product_name, state["max_results_per_site"]
+                )
             )
 
-            loop.close()
-
-            # Adiciona produtos encontrados
-            state["products"].extend(products)
+            state["results"].extend(products)
+            state["remaining_sites"].remove("samsung")
             state["completed_sites"].append("samsung")
 
-            # Adiciona mensagem de resultado
-            message = AIMessage(
-                content=f"Samsung: {len(products)} produtos encontrados"
+            state["messages"].append(
+                AIMessage(content=f"Samsung: {len(products)} produtos encontrados")
             )
-            state["messages"].append(message)
 
-            logger.success(f"Samsung scraping concluído: {len(products)} produtos")
+            logger.info(f"Samsung: {len(products)} produtos coletados")
 
         except Exception as e:
-            error_msg = f"Erro no scraping da Samsung: {str(e)}"
-            state["errors"].append(error_msg)
-            logger.error(error_msg)
+            logger.error(f"Erro no scraping Samsung: {str(e)}")
+            state["remaining_sites"].remove("samsung")
+            state["messages"].append(
+                AIMessage(content=f"Samsung: Erro durante scraping - {str(e)}")
+            )
 
         return state
 
     def _lg_scraper_agent(self, state: ScrapingState) -> ScrapingState:
-        """Agente especializado em scraping da LG Brasil"""
+        """Agente especializado em scraping da LG"""
         logger.info("Agente LG: Iniciando scraping")
 
         try:
             scraper = self.scrapers["lg"]
-            request = state["request"]
-
-            # Executa scraping assíncrono
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            products = loop.run_until_complete(
-                scraper.scrape(request.product_name, request.max_results_per_site)
+            products = asyncio.run(
+                scraper.scrape(
+                    state["request"].product_name, state["max_results_per_site"]
+                )
             )
 
-            loop.close()
-
-            # Adiciona produtos encontrados
-            state["products"].extend(products)
+            state["results"].extend(products)
+            state["remaining_sites"].remove("lg")
             state["completed_sites"].append("lg")
 
-            # Adiciona mensagem de resultado
-            message = AIMessage(
-                content=f"LG: {len(products)} produtos encontrados"
+            state["messages"].append(
+                AIMessage(content=f"LG: {len(products)} produtos encontrados")
             )
-            state["messages"].append(message)
 
-            logger.success(f"LG scraping concluído: {len(products)} produtos")
+            logger.info(f"LG: {len(products)} produtos coletados")
 
         except Exception as e:
-            error_msg = f"Erro no scraping da LG: {str(e)}"
-            state["errors"].append(error_msg)
-            logger.error(error_msg)
+            logger.error(f"Erro no scraping LG: {str(e)}")
+            state["remaining_sites"].remove("lg")
+            state["messages"].append(
+                AIMessage(content=f"LG: Erro durante scraping - {str(e)}")
+            )
 
         return state
 
-    def _results_aggregator_agent(self, state: ScrapingState) -> ScrapingState:
+    def _casas_bahia_scraper_agent(self, state: ScrapingState) -> ScrapingState:
+        """Agente especializado em scraping do Casas Bahia"""
+        logger.info("Agente Casas Bahia: Iniciando scraping")
+
+        try:
+            scraper = self.scrapers["casas_bahia"]
+            products = asyncio.run(
+                scraper.scrape(
+                    state["request"].product_name, state["max_results_per_site"]
+                )
+            )
+
+            state["results"].extend(products)
+            state["remaining_sites"].remove("casas_bahia")
+            state["completed_sites"].append("casas_bahia")
+
+            state["messages"].append(
+                AIMessage(content=f"Casas Bahia: {len(products)} produtos encontrados")
+            )
+
+            logger.info(f"Casas Bahia: {len(products)} produtos coletados")
+
+        except Exception as e:
+            logger.error(f"Erro no scraping Casas Bahia: {str(e)}")
+            state["remaining_sites"].remove("casas_bahia")
+            state["messages"].append(
+                AIMessage(content=f"Casas Bahia: Erro durante scraping - {str(e)}")
+            )
+
+        return state
+
+    def _ponto_frio_scraper_agent(self, state: ScrapingState) -> ScrapingState:
+        """Agente especializado em scraping do Ponto Frio"""
+        logger.info("Agente Ponto Frio: Iniciando scraping")
+
+        try:
+            scraper = self.scrapers["ponto_frio"]
+            products = asyncio.run(
+                scraper.scrape(
+                    state["request"].product_name, state["max_results_per_site"]
+                )
+            )
+
+            state["results"].extend(products)
+            state["remaining_sites"].remove("ponto_frio")
+            state["completed_sites"].append("ponto_frio")
+
+            state["messages"].append(
+                AIMessage(content=f"Ponto Frio: {len(products)} produtos encontrados")
+            )
+
+            logger.info(f"Ponto Frio: {len(products)} produtos coletados")
+
+        except Exception as e:
+            logger.error(f"Erro no scraping Ponto Frio: {str(e)}")
+            state["remaining_sites"].remove("ponto_frio")
+            state["messages"].append(
+                AIMessage(content=f"Ponto Frio: Erro durante scraping - {str(e)}")
+            )
+
+        return state
+
+    def _aggregator_agent(self, state: ScrapingState) -> ScrapingState:
         """Agente agregador que consolida os resultados"""
         logger.info("Agente Agregador: Consolidando resultados")
 
-        total_products = len(state["products"])
-        total_sites = len(state["completed_sites"])
-        total_errors = len(state["errors"])
+        total_products = len(state["results"])
+        sites_completed = len(state["completed_sites"])
 
-        # Ordena produtos por preço (menor primeiro)
-        state["products"].sort(key=lambda p: p.price or float("inf"))
+        # Ordena produtos por preço (menores primeiro)
+        state["results"].sort(key=lambda x: x.price if x.price else float("inf"))
 
-        # Adiciona mensagem de resumo
-        summary_message = AIMessage(
-            content=f"Scraping concluído: {total_products} produtos de {total_sites} sites. {total_errors} erros."
+        # Adiciona estatísticas finais
+        state["messages"].append(
+            AIMessage(
+                content=f"Scraping concluído: {total_products} produtos encontrados em {sites_completed} sites"
+            )
         )
-        state["messages"].append(summary_message)
+
+        # Log das estatísticas por site
+        site_name_mapping = {
+            "amazon": "Amazon BR",
+            "mercadolivre": "Mercado Livre",
+            "carrefour": "Carrefour",
+            "magazine_luiza": "Magazine Luiza",
+            "samsung": "Samsung",
+            "lg": "LG",
+            "casas_bahia": "Casas Bahia",
+            "ponto_frio": "Ponto Frio",
+        }
+
+        for site in state["completed_sites"]:
+            site_display_name = site_name_mapping.get(site, site)
+            site_products = [p for p in state["results"] if p.site == site_display_name]
+            logger.info(f"{site}: {len(site_products)} produtos")
 
         logger.success(f"Agregação concluída: {total_products} produtos consolidados")
         return state
 
-    def _decide_scrapers(self, state: ScrapingState) -> str:
-        """Decide quais scrapers executar baseado na requisição"""
-        target_sites = state["request"].target_sites
+    async def scrape(self, request: ScrapingRequest) -> ScrapingResult:
+        """Executa o processo de scraping orquestrado"""
+        logger.info(f"Iniciando scraping orquestrado para: {request.product_name}")
 
-        if not target_sites:
-            return "end"
-
-        # Mapeia sites para decisão
-        has_amazon = any(site in ["amazon", "all"] for site in target_sites)
-        has_mercadolivre = any(
-            site in ["mercadolivre", "mercado livre", "all"] for site in target_sites
-        )
-        has_magazine_luiza = any(
-            site in ["magazine_luiza", "magazineluiza", "magazine luiza", "all"]
-            for site in target_sites
-        )
-        has_americanas = any(site in ["americanas"] for site in target_sites)
-        has_casas_bahia = any(
-            site in ["casas_bahia", "casasbahia", "casas bahia"]
-            for site in target_sites
-        )
-        has_pontofrio = any(
-            site in ["pontofrio", "ponto frio"] for site in target_sites
-        )
-        has_carrefour = any(site in ["carrefour", "all"] for site in target_sites)
-        has_samsung = any(site in ["samsung"] for site in target_sites)
-
-        # Conta quantos sites foram solicitados
-        site_count = sum(
-            [
-                has_amazon,
-                has_mercadolivre,
-                has_magazine_luiza,
-                has_americanas,
-                has_casas_bahia,
-                has_pontofrio,
-                has_carrefour,
-                has_samsung,
-            ]
-        )
-
-        # Lógica atualizada para múltiplos sites
-        if site_count > 1:
-            return "multiple"
-        elif has_amazon:
-            return "amazon"
-        elif has_mercadolivre:
-            return "mercadolivre"
-        elif has_magazine_luiza:
-            return "magazine_luiza"
-        elif has_americanas:
-            return "americanas"
-        elif has_casas_bahia:
-            return "casas_bahia"
-        elif has_pontofrio:
-            return "pontofrio"
-        elif has_carrefour:
-            return "carrefour"
-        elif has_samsung:
-            return "samsung"
-        else:
-            return "end"
-
-    def _check_remaining_scrapers(self, state: ScrapingState) -> str:
-        """Verifica se há mais scrapers para executar na ordem: mercadolivre → carrefour → magazine_luiza → americanas → casas_bahia → pontofrio"""
-        target_sites = state["request"].target_sites
-        completed_sites = state["completed_sites"]
-
-        # Verifica cada site que deve ser executado
-        has_mercadolivre = any(
-            site in ["mercadolivre", "mercado livre", "all"] for site in target_sites
-        )
-        has_magazine_luiza = any(
-            site in ["magazine_luiza", "magazineluiza", "magazine luiza", "all"]
-            for site in target_sites
-        )
-        has_americanas = any(site in ["americanas"] for site in target_sites)
-        has_casas_bahia = any(
-            site in ["casas_bahia", "casasbahia", "casas bahia"]
-            for site in target_sites
-        )
-        has_pontofrio = any(
-            site in ["pontofrio", "ponto frio"] for site in target_sites
-        )
-        has_carrefour = any(site in ["carrefour", "all"] for site in target_sites)
-        has_samsung = any(site in ["samsung"] for site in target_sites)
-
-        mercadolivre_completed = "mercadolivre" in completed_sites
-        magazine_luiza_completed = "magazine_luiza" in completed_sites
-        americanas_completed = "americanas" in completed_sites
-        casas_bahia_completed = "casas_bahia" in completed_sites
-        pontofrio_completed = "pontofrio" in completed_sites
-        carrefour_completed = "carrefour" in completed_sites
-        samsung_completed = "samsung" in completed_sites
-
-        if has_mercadolivre and not mercadolivre_completed:
-            return "mercadolivre"
-        elif has_carrefour and not carrefour_completed:
-            return "carrefour"
-        elif has_magazine_luiza and not magazine_luiza_completed:
-            return "magazine_luiza"
-        elif has_americanas and not americanas_completed:
-            return "americanas"
-        elif has_casas_bahia and not casas_bahia_completed:
-            return "casas_bahia"
-        elif has_pontofrio and not pontofrio_completed:
-            return "pontofrio"
-        elif has_samsung and not samsung_completed:
-            return "samsung"
-        else:
-            return "done"
-
-    async def execute_scraping(self, request: ScrapingRequest) -> ScrapingResult:
-        """Executa o processo completo de scraping usando LangGraph"""
-        logger.info(f"Iniciando orquestração de scraping para: {request.product_name}")
-
-        import time
+        initial_state: ScrapingState = {
+            "request": request,
+            "results": [],
+            "completed_sites": [],
+            "remaining_sites": [],
+            "messages": [HumanMessage(content=f"Buscar por: {request.product_name}")],
+            "max_results_per_site": request.max_results_per_site,
+        }
 
         start_time = time.time()
 
-        # Estado inicial
-        initial_state: ScrapingState = {
-            "request": request,
-            "products": [],
-            "errors": [],
-            "completed_sites": [],
-            "messages": [],
-        }
-
         try:
-            # Executa o grafo
-            final_state = await asyncio.get_event_loop().run_in_executor(
-                None, self.graph.invoke, initial_state
-            )
+            # Executa o grafo de agentes
+            final_state = await asyncio.to_thread(self.graph.invoke, initial_state)
 
+            # Calcula tempo de execução
             execution_time = time.time() - start_time
 
-            # Cria resultado final
+            # Cria resultado consolidado
             result = ScrapingResult(
                 request=request,
-                products=final_state["products"],
-                errors=final_state["errors"],
-                total_found=len(final_state["products"]),
+                products=final_state["results"],
+                total_found=len(final_state["results"]),
                 execution_time=execution_time,
+                errors=[],
             )
 
-            logger.success(f"Orquestração concluída em {execution_time:.2f}s")
+            logger.success(
+                f"Scraping orquestrado concluído: {result.total_found} produtos de {len(final_state['completed_sites'])} sites em {execution_time:.2f}s"
+            )
+
             return result
 
         except Exception as e:
-            logger.error(f"Erro na orquestração: {str(e)}")
             execution_time = time.time() - start_time
-
+            logger.error(f"Erro durante scraping orquestrado: {str(e)}")
             return ScrapingResult(
                 request=request,
                 products=[],
-                errors=[f"Erro na orquestração: {str(e)}"],
                 total_found=0,
                 execution_time=execution_time,
+                errors=[str(e)],
             )
