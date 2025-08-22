@@ -159,6 +159,9 @@ class BaseScraper(ABC):
             # Obtém HTML da página
             html_content = driver.page_source
 
+            # Armazenar referência do driver para uso em métodos específicos dos scrapers
+            self._driver = driver
+
             # Extrai produtos
             products = self.extract_product_info(html_content, search_url)
 
@@ -177,6 +180,9 @@ class BaseScraper(ABC):
             logger.error(f"Erro no scraping Selenium para {self.config.name}: {str(e)}")
             return []
         finally:
+            # Limpar referência do driver
+            if hasattr(self, "_driver"):
+                self._driver = None
             if driver:
                 driver.quit()
 

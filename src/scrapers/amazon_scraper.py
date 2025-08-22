@@ -136,6 +136,9 @@ class AmazonBRScraper(BaseScraper):
                         if rating_match:
                             rating = float(rating_match.group(1).replace(",", "."))
 
+                # Informações de entrega
+                delivery_info = self._extract_delivery_info(container)
+
                 # Calcular desconto
                 discount_percentage = None
                 if original_price and price and original_price > price:
@@ -153,6 +156,7 @@ class AmazonBRScraper(BaseScraper):
                     site=self.config.name,
                     image_url=image_url,
                     rating=rating,
+                    delivery_info=delivery_info,
                 )
 
                 products.append(product_info)
@@ -192,3 +196,95 @@ class AmazonBRScraper(BaseScraper):
             return float(cleaned)
         except ValueError:
             return None
+
+    def _extract_delivery_info(self, container) -> Optional[str]:
+        """Extrai informações de prazo de entrega do container do produto"""
+        delivery_selectors = [
+            # Seletores comuns para informações de entrega na Amazon
+            "[aria-label*='Entrega']",
+            "[aria-label*='Receba']",
+            ".a-text-bold:contains('Receba')",
+            ".a-size-base:contains('Receba')",
+            ".a-size-small:contains('Receba')",
+            "[data-cy*='delivery']",
+            ".s-shipping-message",
+            ".a-row .a-size-base:contains('Entrega')",
+            ".a-row .a-size-base:contains('Prime')",
+            "[class*='delivery']",
+            "[class*='shipping']",
+        ]
+
+        for selector in delivery_selectors:
+            try:
+                # Para seletores com :contains, usa uma abordagem diferente
+                if ":contains(" in selector:
+                    base_selector = selector.split(":contains(")[0]
+                    search_text = selector.split("':contains('")[1].rstrip("')")
+                    elements = container.select(base_selector)
+                    for elem in elements:
+                        text = elem.get_text(strip=True)
+                        if search_text.lower() in text.lower():
+                            delivery_text = self._clean_delivery_text(text)
+                            if delivery_text:
+                                return delivery_text
+                else:
+                    elem = container.select_one(selector)
+                    if elem:
+                        delivery_text = self._clean_delivery_text(
+                            elem.get_text(strip=True)
+                        )
+                        if delivery_text:
+                            return delivery_text
+            except Exception:
+                continue
+
+        # Fallback: procura por texto que contenha palavras-chave de entrega
+        all_text_elements = container.find_all(text=True)
+        for text in all_text_elements:
+            text_str = str(text).strip()
+            if any(
+                keyword in text_str.lower()
+                for keyword in ["receba", "entrega", "prime", "grátis", "frete"]
+            ):
+                if (
+                    len(text_str) > 5 and len(text_str) < 100
+                ):  # Filtrar textos muito curtos ou longos
+                    delivery_text = self._clean_delivery_text(text_str)
+                    if delivery_text:
+                        return delivery_text
+
+        return None
+
+    def _clean_delivery_text(self, text: str) -> Optional[str]:
+        """Limpa e normaliza o texto de informações de entrega"""
+        if not text or len(text.strip()) < 5:
+            return None
+
+        text = text.strip()
+
+        # Padrões de texto de entrega válidos
+        delivery_patterns = [
+            r"receba.*?(segunda|terça|quarta|quinta|sexta|sábado|domingo)",
+            r"receba.*?\d{1,2}\s+de\s+\w+",
+            r"entrega.*?(grátis|gratuita)",
+            r"prime.*?(grátis|gratuita|amanhã)",
+            r"frete.*?(grátis|gratuito)",
+            r"entrega.*?\d+.*?dias?",
+            r"receba.*?até.*?\d+",
+        ]
+
+        text_lower = text.lower()
+        for pattern in delivery_patterns:
+            if re.search(pattern, text_lower):
+                # Limita o tamanho do texto retornado
+                if len(text) <= 80:
+                    return text
+                else:
+                    # Se for muito longo, tenta extrair apenas a parte relevante
+                    match = re.search(pattern, text_lower)
+                    if match:
+                        start_pos = max(0, match.start() - 10)
+                        end_pos = min(len(text), match.end() + 10)
+                        return text[start_pos:end_pos].strip()
+
+        return None

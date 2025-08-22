@@ -94,6 +94,9 @@ def print_results(result: ScrapingResult):
             if product.reviews_count:
                 print(f"   📝 Avaliações: {product.reviews_count}")
 
+            if product.delivery_info:
+                print(f"   🚚 Entrega: {product.delivery_info}")
+
             print(
                 f"   📅 Coletado em: {product.scraped_at.strftime('%d/%m/%Y %H:%M:%S')}"
             )

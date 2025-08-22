@@ -27,6 +27,9 @@ class ProductInfo(BaseModel):
     reviews_count: Optional[int] = Field(
         default=None, description="Número de avaliações"
     )
+    delivery_info: Optional[str] = Field(
+        default=None, description="Informações de prazo de entrega"
+    )
     scraped_at: datetime = Field(
         default_factory=datetime.now, description="Timestamp do scraping"
     )
